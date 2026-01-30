@@ -114,7 +114,7 @@ export class McpAtlassianStack extends cdk.Stack {
     // ----------------------------------------------------------------
     const mcpSG = new ec2.SecurityGroup(this, 'McpSecurityGroup', {
       securityGroupName: 'mcp-atlassian-sg',
-      description: 'MCP Atlassian server — inbound from LangBuilder only',
+      description: 'MCP Atlassian server - inbound from LangBuilder only',
       vpc,
     });
     mcpSG.addIngressRule(
