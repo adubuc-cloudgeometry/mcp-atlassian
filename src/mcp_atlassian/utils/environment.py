@@ -45,6 +45,11 @@ def get_available_services(
                 "Using Confluence OAuth 2.0 (3LO) authentication (Cloud-only features) "
                 "with provided access token"
             )
+        elif os.getenv("ATLASSIAN_OAUTH_ENABLE", "").lower() in ("true", "1", "yes"):
+            confluence_is_setup = True
+            logger.info(
+                "Using Confluence minimal OAuth configuration - expecting user-provided tokens via headers"
+            )
         elif is_cloud:  # Cloud non-OAuth
             if all(
                 [
@@ -103,6 +108,11 @@ def get_available_services(
             logger.info(
                 "Using Jira OAuth 2.0 (3LO) authentication (Cloud-only features) "
                 "with provided access token"
+            )
+        elif os.getenv("ATLASSIAN_OAUTH_ENABLE", "").lower() in ("true", "1", "yes"):
+            jira_is_setup = True
+            logger.info(
+                "Using Jira minimal OAuth configuration - expecting user-provided tokens via headers"
             )
         elif is_cloud:  # Cloud non-OAuth
             if all(
