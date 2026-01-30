@@ -8,13 +8,14 @@ Deploy an [mcp-atlassian](https://github.com/sooperset/mcp-atlassian) server to 
 LangBuilder / MCP Client
     │
     │ JSON-RPC over HTTP, port 9000
+    │ Authorization: Basic <email:token>
     │ (private subnet, no public IP)
     ▼
 ┌──────────────────────────────────────┐
 │ ECS Fargate Service                  │
 │  mcp-atlassian container             │
 │  0.25 vCPU / 512 MB                 │
-│  Env vars from Secrets Manager       │
+│  Per-user auth (no shared secrets)   │
 │  Health check: /healthz              │
 │  Transport: streamable-http          │
 │  Service Discovery:                  │
@@ -34,7 +35,6 @@ LangBuilder / MCP Client
 | NAT Gateway | Allows private-subnet container to reach Atlassian APIs |
 | ECS Cluster (Fargate) | Runs the mcp-atlassian container |
 | ECR Repository | Stores the Docker image |
-| Secrets Manager Secret | Holds JIRA/Confluence credentials securely |
 | Security Group | Restricts inbound to port 9000 from `allowedCidr` only |
 | Cloud Map Namespace | DNS-based service discovery (`atlassian.mcp.internal`) |
 | CloudWatch Log Group | 2-week log retention |
@@ -45,11 +45,10 @@ LangBuilder / MCP Client
 |------|-------------|
 | Fargate (0.25 vCPU + 512 MB, always-on) | ~$9.50 |
 | NAT Gateway | ~$3.50 + data transfer |
-| Secrets Manager (1 secret) | $0.40 |
 | ECR (<1 GB) | ~$0.10 |
 | CloudWatch Logs | ~$0.50 |
 | Cloud Map | ~$0.10 |
-| **Total** | **~$14/month** |
+| **Total** | **~$13.50/month** |
 
 If you deploy into an existing VPC that already has a NAT Gateway, subtract ~$3.50.
 
@@ -71,14 +70,6 @@ If you deploy into an existing VPC that already has a NAT Gateway, subtract ~$3.
    ```bash
    docker info   # must not error
    ```
-
-4. **Atlassian API Token** — generate one at:
-   https://id.atlassian.com/manage-profile/security/api-tokens
-
-5. **Your Atlassian details:**
-   - Atlassian URL (e.g. `https://yourcompany.atlassian.net`)
-   - Email address associated with the API token
-   - The API token itself
 
 ---
 
@@ -115,10 +106,10 @@ npx cdk deploy
 The first deploy takes ~3 minutes. CDK will:
 - Build the Docker image locally from the repo root `Dockerfile`
 - Push it to an ECR repository in your account
-- Create all infrastructure resources (VPC, ECS, Secrets Manager, etc.)
+- Create all infrastructure resources (VPC, ECS, etc.)
 - Start the ECS service
 
-> **Note:** On first deploy, the container will crash because Secrets Manager has placeholder credentials. This is expected — fix it in Step 5.
+The server starts in per-user auth mode (`ATLASSIAN_OAUTH_ENABLE=true`). No shared credentials are stored on the server. Each LangBuilder user provides their own Atlassian email + API token via the AtlassianMCP component UI.
 
 **To deploy into an existing VPC** (saves ~$3.50/month on NAT Gateway):
 ```bash
@@ -130,35 +121,7 @@ npx cdk deploy -c existingVpcName=your-vpc-name
 npx cdk deploy -c allowedCidr=10.2.0.0/16
 ```
 
-### Step 5: Set real Atlassian credentials
-
-Replace the placeholder values with your actual credentials:
-
-```bash
-aws secretsmanager put-secret-value \
-  --secret-id mcp-atlassian/credentials \
-  --secret-string '{
-    "JIRA_URL": "https://yourcompany.atlassian.net",
-    "JIRA_USERNAME": "you@yourcompany.com",
-    "JIRA_API_TOKEN": "your-actual-api-token",
-    "CONFLUENCE_URL": "https://yourcompany.atlassian.net/wiki",
-    "CONFLUENCE_USERNAME": "you@yourcompany.com",
-    "CONFLUENCE_API_TOKEN": "your-actual-api-token"
-  }'
-```
-
-> Typically JIRA and Confluence share the same username and API token.
-
-### Step 6: Restart the service to pick up new credentials
-
-```bash
-aws ecs update-service \
-  --cluster mcp-atlassian-cluster \
-  --service mcp-atlassian \
-  --force-new-deployment
-```
-
-### Step 7: Verify the container is healthy
+### Step 5: Verify the container is healthy
 
 Wait ~60 seconds, then:
 
@@ -196,13 +159,16 @@ Expected: `{"status": "RUNNING", "health": "HEALTHY"}`
 
 ## Connecting LangBuilder to the Deployed Server
 
-Once the MCP server is running on AWS, configure the AtlassianMCPComponent in LangBuilder:
+Once the MCP server is running on AWS, each LangBuilder user configures the AtlassianMCPComponent with their own credentials:
 
 | Field | Value |
 |-------|-------|
 | MCP Server URL | `http://atlassian.mcp.internal:9000` (if same VPC) or the private IP of the Fargate task |
-| Atlassian Email | Your Atlassian email |
-| Atlassian API Token | Your Atlassian API token |
+| Atlassian URL | `https://yourcompany.atlassian.net` |
+| Atlassian Email | User's own Atlassian email |
+| Atlassian API Token | User's own API token (generate at https://id.atlassian.com/manage-profile/security/api-tokens) |
+
+Credentials are sent per-request via `Authorization: Basic` headers. The server holds no shared secrets.
 
 > **Important:** The MCP server runs in a private subnet with no public IP. LangBuilder must be in the same VPC or a peered VPC to reach it. Use the service discovery endpoint `atlassian.mcp.internal:9000` if both are in the same VPC.
 
@@ -240,19 +206,12 @@ aws ecs execute-command \
   --command "/bin/sh"
 ```
 
-### Check what credentials the container sees
-```bash
-aws secretsmanager get-secret-value \
-  --secret-id mcp-atlassian/credentials \
-  --query 'SecretString' --output text | python3 -m json.tool
-```
-
 ### Common issues
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Container keeps restarting (circuit breaker) | Placeholder credentials in Secrets Manager | Run Step 5 + Step 6 |
 | `ECONNREFUSED` from LangBuilder | LangBuilder not in same VPC, or wrong URL | Check network connectivity |
+| `401 Unauthorized` from MCP tool calls | Missing or invalid credentials in LangBuilder component | Check Atlassian email + API token in component settings |
 | Health check failing | Server not binding to `0.0.0.0` | Verify `--host 0.0.0.0` in task definition command |
 | Stack deploy fails with "already exists" | Orphaned ECR repo from previous failed deploy | Delete the ECR repo manually: `aws ecr delete-repository --repository-name mcp-atlassian --force` |
 | Stack deploy fails with "non-ASCII" | Special characters in resource descriptions | Ensure all strings in CDK code are ASCII-only |
@@ -266,7 +225,7 @@ cd cdk
 npx cdk destroy
 ```
 
-This removes all resources including the VPC, ECS cluster, secrets, and logs. ECR repository is also destroyed (`RemovalPolicy.DESTROY`).
+This removes all resources including the VPC, ECS cluster, and logs. ECR repository is also destroyed (`RemovalPolicy.DESTROY`).
 
 ---
 
@@ -285,7 +244,6 @@ After deployment, the stack outputs:
 
 | Output | Example |
 |--------|---------|
-| `SecretArn` | `arn:aws:secretsmanager:us-west-2:123456789012:secret:mcp-atlassian/credentials-AbCdEf` |
 | `ServiceDiscoveryEndpoint` | `atlassian.mcp.internal:9000` |
 | `EcrRepoUri` | `123456789012.dkr.ecr.us-west-2.amazonaws.com/mcp-atlassian` |
 | `ClusterName` | `mcp-atlassian-cluster` |

@@ -6,7 +6,6 @@ import {
   aws_ecr as ecr,
   aws_iam as iam,
   aws_logs as logs,
-  aws_secretsmanager as secretsmanager,
 } from 'aws-cdk-lib';
 import { DockerImageAsset, Platform } from 'aws-cdk-lib/aws-ecr-assets';
 import * as path from 'path';
@@ -55,25 +54,6 @@ export class McpAtlassianStack extends cdk.Stack {
         ],
       });
     }
-
-    // ----------------------------------------------------------------
-    // Secrets Manager — Atlassian credentials
-    // ----------------------------------------------------------------
-    const atlassianSecret = new secretsmanager.Secret(this, 'AtlassianCredentials', {
-      secretName: 'mcp-atlassian/credentials',
-      description: 'Atlassian API credentials for mcp-atlassian server',
-      generateSecretString: {
-        secretStringTemplate: JSON.stringify({
-          JIRA_URL: 'https://your-domain.atlassian.net',
-          JIRA_USERNAME: 'user@company.com',
-          JIRA_API_TOKEN: 'CHANGE_ME',
-          CONFLUENCE_URL: 'https://your-domain.atlassian.net/wiki',
-          CONFLUENCE_USERNAME: 'user@company.com',
-          CONFLUENCE_API_TOKEN: 'CHANGE_ME',
-        }),
-        generateStringKey: '_rotation_placeholder',
-      },
-    });
 
     // ----------------------------------------------------------------
     // ECR Repository
@@ -144,9 +124,6 @@ export class McpAtlassianStack extends cdk.Stack {
       ],
     });
 
-    // Allow execution role to pull secrets
-    atlassianSecret.grantRead(taskExecutionRole);
-
     const taskRole = new iam.Role(this, 'TaskRole', {
       assumedBy: new iam.ServicePrincipal('ecs-tasks.amazonaws.com'),
     });
@@ -178,13 +155,10 @@ export class McpAtlassianStack extends cdk.Stack {
           protocol: ecs.Protocol.TCP,
         },
       ],
-      secrets: {
-        JIRA_URL: ecs.Secret.fromSecretsManager(atlassianSecret, 'JIRA_URL'),
-        JIRA_USERNAME: ecs.Secret.fromSecretsManager(atlassianSecret, 'JIRA_USERNAME'),
-        JIRA_API_TOKEN: ecs.Secret.fromSecretsManager(atlassianSecret, 'JIRA_API_TOKEN'),
-        CONFLUENCE_URL: ecs.Secret.fromSecretsManager(atlassianSecret, 'CONFLUENCE_URL'),
-        CONFLUENCE_USERNAME: ecs.Secret.fromSecretsManager(atlassianSecret, 'CONFLUENCE_USERNAME'),
-        CONFLUENCE_API_TOKEN: ecs.Secret.fromSecretsManager(atlassianSecret, 'CONFLUENCE_API_TOKEN'),
+      environment: {
+        // Per-request auth mode: each request carries user credentials
+        // via Authorization: Basic header. No shared credentials on server.
+        ATLASSIAN_OAUTH_ENABLE: 'true',
       },
       command: ['--transport', 'streamable-http', '--host', '0.0.0.0', '--port', MCP_PORT.toString()],
       healthCheck: {
@@ -213,7 +187,7 @@ export class McpAtlassianStack extends cdk.Stack {
     // ----------------------------------------------------------------
     // Service Discovery (optional — allows DNS-based access within VPC)
     // ----------------------------------------------------------------
-    const namespace = cluster.addDefaultCloudMapNamespace({
+    cluster.addDefaultCloudMapNamespace({
       name: 'mcp.internal',
       vpc,
     });
@@ -226,11 +200,6 @@ export class McpAtlassianStack extends cdk.Stack {
     // ----------------------------------------------------------------
     // Outputs
     // ----------------------------------------------------------------
-    new cdk.CfnOutput(this, 'SecretArn', {
-      value: atlassianSecret.secretArn,
-      description: 'ARN of the Atlassian credentials secret — update via AWS Console or CLI',
-    });
-
     new cdk.CfnOutput(this, 'ServiceDiscoveryEndpoint', {
       value: `atlassian.mcp.internal:${MCP_PORT}`,
       description: 'Internal DNS endpoint for the MCP server (from within the VPC)',
