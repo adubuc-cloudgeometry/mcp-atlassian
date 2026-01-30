@@ -80,7 +80,7 @@ export class McpAtlassianStack extends cdk.Stack {
     // ----------------------------------------------------------------
     const ecrRepo = new ecr.Repository(this, 'McpAtlassianRepo', {
       repositoryName: 'mcp-atlassian',
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
       imageScanOnPush: true,
       lifecycleRules: [
         {
@@ -186,9 +186,9 @@ export class McpAtlassianStack extends cdk.Stack {
         CONFLUENCE_USERNAME: ecs.Secret.fromSecretsManager(atlassianSecret, 'CONFLUENCE_USERNAME'),
         CONFLUENCE_API_TOKEN: ecs.Secret.fromSecretsManager(atlassianSecret, 'CONFLUENCE_API_TOKEN'),
       },
-      command: ['--transport', 'http', '--port', MCP_PORT.toString()],
+      command: ['--transport', 'streamable-http', '--host', '0.0.0.0', '--port', MCP_PORT.toString()],
       healthCheck: {
-        command: ['CMD-SHELL', `wget -qO- http://localhost:${MCP_PORT}/mcp || exit 1`],
+        command: ['CMD-SHELL', `wget -qO- http://localhost:${MCP_PORT}/healthz || exit 1`],
         interval: cdk.Duration.seconds(30),
         timeout: cdk.Duration.seconds(5),
         retries: 3,
